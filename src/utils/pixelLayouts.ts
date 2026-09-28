@@ -226,3 +226,58 @@ export function generatePixelLayout(
     bounds: { minX: 0, maxX: totalW, minY: 0, maxY: totalH }
   };
 }
+
+export interface GridFitStats {
+  columns: number;
+  rows: number;
+  totalWords: number;
+  totalCapacity: number;
+  lastRowWords: number;
+  isFullFit: boolean;
+  remainingSlotsInLastRow: number;
+  estimatedLettersInRow: number;
+  estimatedTotalLetters: number;
+  aspectRatio: string;
+}
+
+/**
+ * Calculates whether a rectangle or square completely closes at the last word
+ * or has remaining slots, as well as character length per row.
+ */
+export function computeGridFitStats(columns: number, totalWords = TOTAL_QURAN_WORDS): GridFitStats {
+  const cols = Math.max(1, columns);
+  const rows = Math.ceil(totalWords / cols);
+  const totalCapacity = cols * rows;
+  const remainder = totalWords % cols;
+  const lastRowWords = remainder === 0 ? cols : remainder;
+  const remainingSlotsInLastRow = (cols - lastRowWords) % cols;
+  const isFullFit = remainingSlotsInLastRow === 0;
+
+  // Average Arabic letters per word in the Quran is ~4.159 (323,671 letters / 77,825 words)
+  const AVG_LETTERS_PER_WORD = 4.159;
+  const estimatedLettersInRow = Math.round(cols * AVG_LETTERS_PER_WORD);
+  const estimatedTotalLetters = 323671; // Quran official letter count standard
+
+  return {
+    columns: cols,
+    rows,
+    totalWords,
+    totalCapacity,
+    lastRowWords,
+    isFullFit,
+    remainingSlotsInLastRow,
+    estimatedLettersInRow,
+    estimatedTotalLetters,
+    aspectRatio: `${cols} × ${rows}`
+  };
+}
+
+/**
+ * Exact factors of 77,825 for perfect full grid fit (last word completely closes the rectangle)
+ */
+export const PERFECT_FIT_PRESETS = [
+  { label: '٢٧٥ × ٢٨٣ (كامل ومسكر 100% - شبه مربع)', cols: 275, rows: 283, desc: 'تغلق الكلمة الأخيرة المستطيل تماماً بدون أي فراغ' },
+  { label: '٢٨٣ × ٢٧٥ (كامل ومسكر 100% - أفقي عريض)', cols: 283, rows: 275, desc: 'تغلق الكلمة الأخيرة المستطيل تماماً بدون أي فراغ' },
+  { label: '٢٧٩ × ٢٧٩ (مربع متطابق 1:1 - باقي 16 فقط)', cols: 279, rows: 279, desc: 'أقرب مربع متطابق 1:1 مع فراغ 16 بكسل فقط في السطر الأخير' }
+];
+

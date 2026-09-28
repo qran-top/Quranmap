@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
 import { Header } from './components/Header';
 import { SearchControl } from './components/SearchControl';
@@ -15,7 +15,7 @@ import { HelpModal } from './components/HelpModal';
 import { BoardShape, GlowTheme, CanvasBgTheme, QuranWord } from './types/quran';
 import { searchQuranWordsAsync, searchQuranWords, getQuranWords } from './data/quranDataset';
 import { TOTAL_QURAN_WORDS } from './data/surahs';
-import { Sparkles, Sliders, Info } from 'lucide-react';
+import { Sparkles, Sliders, Info, BookOpen, Play, Pause, Zap } from 'lucide-react';
 
 export default function App() {
   // Search & Filter State
@@ -24,6 +24,12 @@ export default function App() {
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchProgress, setSearchProgress] = useState<number>(0);
   const [searchStageText, setSearchStageText] = useState<string>('');
+
+  // Performance & Details Mode State (Lazy loading of words & tooltips)
+  const [detailsMode, setDetailsMode] = useState<boolean>(false);
+
+  // Animation Toggle State
+  const [animationEnabled, setAnimationEnabled] = useState<boolean>(true);
 
   // Illuminated pixel indices state
   const [highlightedIndices, setHighlightedIndices] = useState<Set<number>>(() => {
@@ -47,9 +53,6 @@ export default function App() {
 
   // Export ref
   const canvasExportRef = useRef<(() => string | null) | null>(null);
-
-  // Quran words list
-  const allWords = useMemo(() => getQuranWords(), []);
 
   // Async search executor
   const handleExecuteSearch = useCallback(async (query: string, exact: boolean) => {
@@ -94,7 +97,10 @@ export default function App() {
     }
   }, [activeQuery, handleExecuteSearch]);
 
-  const selectedWord: QuranWord | null = selectedWordIndex !== null ? allWords[selectedWordIndex] || null : null;
+  // Selected word for Ayah modal: lazy loaded only when modal opens
+  const selectedWord: QuranWord | null = selectedWordIndex !== null 
+    ? getQuranWords()[selectedWordIndex] || null 
+    : null;
 
   // Export High-Res Canvas Poster
   const handleExportImage = () => {
@@ -130,16 +136,54 @@ export default function App() {
       {/* Main App Body */}
       <main className="flex-1 max-w-[1520px] w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-6">
         
-        {/* Intro banner */}
+        {/* Intro banner with Quick Mode Toggles */}
         <div className="bg-gradient-to-r from-slate-900/90 via-slate-900/60 to-slate-900/90 border border-slate-800/80 rounded-2xl p-4 sm:p-5 backdrop-blur-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <h2 className="text-base sm:text-xl font-bold text-white font-arabic flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-amber-400" />
               <span>مصحف البكسل الرقمي: ٧٧,٨٢٥ كلمة من نور</span>
             </h2>
             <p className="text-xs sm:text-sm text-slate-400 max-w-3xl leading-relaxed font-arabic">
-              كل بكسل في هذه اللوحة يمثل كلمة من كلمات القرآن الكريم مرتبة بالتتابع من الفاتحة إلى الناس. اكتب أي كلمة ثم انقر <strong className="text-amber-400">بحث</strong> لإنارة كافة مواضعها دون أي تعليق، أو خصص شكل اللوحة بحرية.
+              كل بكسل في هذه اللوحة يمثل كلمة من كلمات القرآن الكريم مرتبة بالتتابع من الفاتحة إلى الناس. اكتب أي كلمة ثم انقر <strong className="text-amber-400">بحث</strong> لإنارة مواضعها بدقة، أو غيّر شكل اللوحة ومقاساتها.
             </p>
+
+            {/* Quick Status Badges */}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                onClick={() => setDetailsMode(!detailsMode)}
+                className={`text-xs px-2.5 py-1 rounded-lg font-arabic font-semibold transition-all flex items-center gap-1.5 border ${
+                  detailsMode
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm'
+                    : 'bg-slate-950/80 text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+                title="تفعيل أو تعطيل تحميل تفاصيل الكلمات لتسريع الصفحة"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                <span>{detailsMode ? 'وضع إظهار التفاصيل: مفعّل' : 'وضع الأداء السريع (انقر لإظهار التفاصيل)'}</span>
+              </button>
+
+              <button
+                onClick={() => setAnimationEnabled(!animationEnabled)}
+                className={`text-xs px-2.5 py-1 rounded-lg font-arabic font-semibold transition-all flex items-center gap-1.5 border ${
+                  animationEnabled
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-slate-950/80 text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+                title="تشغيل أو إيقاف الأنيميشن لتوفير المعالج"
+              >
+                {animationEnabled ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>الأنيميشن: شغّال</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 text-amber-400" />
+                    <span>الأنيميشن: متوقف (خفيف)</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-2 self-stretch md:self-auto shrink-0">
@@ -205,6 +249,8 @@ export default function App() {
                 onGlowIntensityChange={setGlowIntensity}
                 animationMode={animationMode}
                 onAnimationModeChange={setAnimationMode}
+                animationEnabled={animationEnabled}
+                onToggleAnimation={setAnimationEnabled}
               />
             )}
 
@@ -218,10 +264,10 @@ export default function App() {
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 text-xs text-slate-400 space-y-2 font-arabic">
               <span className="font-semibold text-slate-300 flex items-center gap-1.5">
                 <Info className="w-3.5 h-3.5 text-amber-400" />
-                <span>تلميح تفاعلي:</span>
+                <span>تلميح السرعة وتفاصيل الآيات:</span>
               </span>
               <p className="leading-relaxed">
-                انقر على أي بكسل مضيء أو خافت على لوحة العرض لتستكشف نص الآية الكاملة مع اسم السورة والاستماع لتلاوتها العطرة بصوت القارئ مباشرة.
+                عند تفعيل <strong className="text-amber-300">«وضع إظهار التفاصيل»</strong> يمكنك تمرير الفأرة فوق أي بكسل لمعرفة كلمته وسورته، والنقر عليه لسماع التلاوة العطرة مباشرة. وعند إيقافه تعمل الصفحة بسرعة البرق بدون أي ثقل.
               </p>
             </div>
           </div>
@@ -237,6 +283,10 @@ export default function App() {
               bgTheme={bgTheme}
               glowIntensity={glowIntensity}
               animationMode={animationMode}
+              animationEnabled={animationEnabled}
+              onToggleAnimation={setAnimationEnabled}
+              detailsMode={detailsMode}
+              onToggleDetailsMode={setDetailsMode}
               highlightedIndices={highlightedIndices}
               searchQuery={activeQuery}
               onSelectWord={(wordIdx) => setSelectedWordIndex(wordIdx)}

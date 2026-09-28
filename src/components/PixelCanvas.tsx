@@ -1,16 +1,19 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { BoardShape, GlowTheme, CanvasBgTheme, PixelPoint } from '../types/quran';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { BoardShape, GlowTheme, CanvasBgTheme } from '../types/quran';
 import { generatePixelLayout, LayoutResult } from '../utils/pixelLayouts';
-import { getQuranWords, getSurahForWordIndex, SAMPLE_VERSES } from '../data/quranDataset';
-import { TOTAL_QURAN_WORDS, SURAHS } from '../data/surahs';
+import { getQuranWords, getSurahForWordIndex } from '../data/quranDataset';
+import { TOTAL_QURAN_WORDS } from '../data/surahs';
 import { 
   ZoomIn, 
   ZoomOut, 
   Maximize2, 
-  Compass, 
   Sparkles,
+  Play,
+  Pause,
+  BookOpen,
   Info,
-  BookOpen
+  CheckCircle2,
+  MousePointerClick
 } from 'lucide-react';
 
 interface PixelCanvasProps {
@@ -22,6 +25,10 @@ interface PixelCanvasProps {
   bgTheme: CanvasBgTheme;
   glowIntensity: number;
   animationMode: 'instant' | 'wave' | 'pulse' | 'sequential';
+  animationEnabled: boolean;
+  onToggleAnimation: (enabled: boolean) => void;
+  detailsMode: boolean;
+  onToggleDetailsMode: (enabled: boolean) => void;
   highlightedIndices: Set<number>;
   searchQuery: string;
   onSelectWord: (wordIndex: number) => void;
@@ -37,6 +44,10 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
   bgTheme,
   glowIntensity,
   animationMode,
+  animationEnabled,
+  onToggleAnimation,
+  detailsMode,
+  onToggleDetailsMode,
   highlightedIndices,
   searchQuery,
   onSelectWord,
@@ -51,24 +62,18 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Hover state
+  // Hover state (only populated if detailsMode is active)
   const [hoveredWordIndex, setHoveredWordIndex] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Layout result cache
   const [layout, setLayout] = useState<LayoutResult>(() => generatePixelLayout(shape, TOTAL_QURAN_WORDS, columns));
 
-  // Animation frame
-  const animTimeRef = useRef<number>(0);
-  const animStartTimeRef = useRef<number>(Date.now());
-
   // Generate layout when shape or columns change
   useEffect(() => {
     const newLayout = generatePixelLayout(shape, TOTAL_QURAN_WORDS, columns);
     setLayout(newLayout);
-    // Reset view position to center
     resetTransform(newLayout);
-    animStartTimeRef.current = Date.now();
   }, [shape, columns]);
 
   // Reset transform to fit content nicely
@@ -82,8 +87,8 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
     const boardW = currentLayout.width * unitSize;
     const boardH = currentLayout.height * unitSize;
 
-    const scaleX = (cWidth - 80) / boardW;
-    const scaleY = (cHeight - 80) / boardH;
+    const scaleX = (cWidth - 60) / boardW;
+    const scaleY = (cHeight - 60) / boardH;
     const fitZoom = Math.min(Math.max(0.1, Math.min(scaleX, scaleY)), 3);
 
     setZoom(fitZoom);
@@ -106,6 +111,20 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
       };
     }
   }, [canvasExportRef]);
+
+  // Fast O(1) spatial index when detailsMode is active
+  const spatialMap = useMemo(() => {
+    if (!detailsMode) return null;
+    if (shape === 'square' || shape === 'rectangle') return null; // Can compute directly mathematically
+    const map = new Map<string, number>();
+    for (let i = 0; i < layout.points.length; i++) {
+      const pt = layout.points[i];
+      if (pt) {
+        map.set(`${pt.x},${pt.y}`, i);
+      }
+    }
+    return map;
+  }, [layout, detailsMode, shape]);
 
   // Color mappings
   const getGlowColor = (theme: GlowTheme): { main: string; glow: string; halo: string } => {
@@ -138,66 +157,52 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
         return '#1c150c';
       case 'dark-slate':
       default:
-        return '#030712';
+        return '#0f172a';
     }
   };
 
-  // Main Canvas Rendering Loop
+  // High Performance Canvas Rendering
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !containerRef.current) return;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
     let animationFrameId: number;
+    const startTime = Date.now();
+    const unitSize = pixelSize + pixelGap;
+    const glowColors = getGlowColor(glowTheme);
+    const bgColor = getBgColor(bgTheme);
+    const hasHighlights = highlightedIndices.size > 0;
 
     const render = () => {
-      const width = canvas.width;
-      const height = canvas.height;
+      const now = Date.now();
+      const elapsed = (now - startTime) / 1000;
 
-      // Fill background
-      ctx.fillStyle = getBgColor(bgTheme);
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Apply zoom & pan transformations
       ctx.save();
       ctx.translate(pan.x, pan.y);
       ctx.scale(zoom, zoom);
 
-      const unitSize = pixelSize + pixelGap;
-      const glowColors = getGlowColor(glowTheme);
-      const words = getQuranWords();
-      const now = Date.now();
-      const elapsed = (now - animStartTimeRef.current) / 1000;
+      // 1. Draw Unlit Base Grid (Dark/Subtle Dots)
+      ctx.fillStyle = bgTheme === 'kaaba-black' ? '#18181b' : '#1e293b';
+      const points = layout.points;
+      const count = points.length;
 
-      // 1. Draw Subtle Unlit Pixels
-      const defaultUnlitColor = bgTheme === 'parchment' ? 'rgba(160, 130, 90, 0.18)' : 'rgba(255, 255, 255, 0.12)';
-      const alternateUnlitColor = bgTheme === 'parchment' ? 'rgba(180, 150, 100, 0.25)' : 'rgba(255, 255, 255, 0.2)';
-
-      // Batch draw unlit pixels
-      for (let i = 0; i < layout.points.length; i++) {
-        const pt = layout.points[i];
-        if (!pt) continue;
-
-        const isHighlighted = highlightedIndices.has(i);
-        if (isHighlighted) continue; // Draw lit pixels in second pass for layering
-
-        const px = pt.x * unitSize;
-        const py = pt.y * unitSize;
-
-        // Subtle Juz / Surah rhythm visualization
-        const wordObj = words[i];
-        const surahId = wordObj ? wordObj.surah : 1;
-        ctx.fillStyle = surahId % 2 === 0 ? defaultUnlitColor : alternateUnlitColor;
-        
-        ctx.fillRect(px, py, pixelSize, pixelSize);
+      for (let i = 0; i < count; i++) {
+        if (!highlightedIndices.has(i)) {
+          const pt = points[i];
+          if (pt) {
+            ctx.fillRect(pt.x * unitSize, pt.y * unitSize, pixelSize, pixelSize);
+          }
+        }
       }
 
-      // 2. Draw Highlighted / Illuminated Pixels with Glow
-      const hasHighlights = highlightedIndices.size > 0;
-
+      // 2. Draw Illuminated Lit Pixels
       if (hasHighlights) {
-        // Glow Halo pass (if zoom is sufficient or high intensity)
+        // Optional Halo pass
         if (glowIntensity > 0.6) {
           ctx.fillStyle = glowColors.halo;
           const haloPadding = Math.max(1, pixelSize * 1.2 * glowIntensity);
@@ -207,9 +212,9 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
             if (!pt) return;
 
             let alphaMult = 1;
-            if (animationMode === 'pulse') {
+            if (animationEnabled && animationMode === 'pulse') {
               alphaMult = 0.6 + 0.4 * Math.sin(elapsed * 4 + idx * 0.05);
-            } else if (animationMode === 'wave') {
+            } else if (animationEnabled && animationMode === 'wave') {
               alphaMult = 0.5 + 0.5 * Math.sin(elapsed * 3 - (pt.x + pt.y) * 0.08);
             }
 
@@ -229,11 +234,11 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
           if (!pt) return;
 
           let brightness = 1;
-          if (animationMode === 'pulse') {
+          if (animationEnabled && animationMode === 'pulse') {
             brightness = 0.8 + 0.2 * Math.sin(elapsed * 4 + idx * 0.05);
-          } else if (animationMode === 'wave') {
+          } else if (animationEnabled && animationMode === 'wave') {
             brightness = 0.7 + 0.3 * Math.sin(elapsed * 3 - (pt.x + pt.y) * 0.08);
-          } else if (animationMode === 'sequential') {
+          } else if (animationEnabled && animationMode === 'sequential') {
             const progress = (elapsed * 2500) % TOTAL_QURAN_WORDS;
             brightness = idx <= progress ? 1 : 0.2;
           }
@@ -242,13 +247,15 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
           ctx.fillStyle = glowColors.main;
           ctx.fillRect(pt.x * unitSize, pt.y * unitSize, pixelSize, pixelSize);
 
-          // For rare/few occurrences (like 'محمد' 4 times or 'أحمد' 1 time), draw an attention-drawing beacon halo
+          // For small match count (like 4 occurrences of 'محمد'), draw clear beacons
           if (highlightedIndices.size <= 25) {
-            const pulseRadius = (pixelSize * 3.5) + (Math.sin(elapsed * 5 + idx) + 1) * (pixelSize * 2);
+            const pulseRadius = animationEnabled 
+              ? (pixelSize * 3.5) + (Math.sin(elapsed * 5 + idx) + 1) * (pixelSize * 2)
+              : (pixelSize * 4.5);
             ctx.save();
             ctx.strokeStyle = glowColors.main;
             ctx.lineWidth = Math.max(1, 1.5 / zoom);
-            ctx.globalAlpha = 0.4 + 0.4 * Math.sin(elapsed * 5 + idx);
+            ctx.globalAlpha = animationEnabled ? (0.4 + 0.4 * Math.sin(elapsed * 5 + idx)) : 0.6;
             ctx.beginPath();
             ctx.arc(
               pt.x * unitSize + pixelSize / 2,
@@ -265,8 +272,8 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
         ctx.globalAlpha = 1;
       }
 
-      // 3. Draw Hover Indicator
-      if (hoveredWordIndex !== null && layout.points[hoveredWordIndex]) {
+      // 3. Draw Hover Indicator (only when detailsMode is active)
+      if (detailsMode && hoveredWordIndex !== null && layout.points[hoveredWordIndex]) {
         const hPt = layout.points[hoveredWordIndex];
         const hx = hPt.x * unitSize;
         const hy = hPt.y * unitSize;
@@ -278,8 +285,8 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
 
       ctx.restore();
 
-      // If animated, loop
-      if (hasHighlights && (animationMode === 'pulse' || animationMode === 'wave' || animationMode === 'sequential')) {
+      // Only request next animation frame if animation is enabled and active
+      if (animationEnabled && hasHighlights && (animationMode === 'pulse' || animationMode === 'wave' || animationMode === 'sequential')) {
         animationFrameId = requestAnimationFrame(render);
       }
     };
@@ -291,7 +298,21 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
         cancelAnimationFrame(animationFrameId);
       }
     };
-  }, [layout, pan, zoom, pixelSize, pixelGap, glowTheme, bgTheme, glowIntensity, highlightedIndices, animationMode, hoveredWordIndex]);
+  }, [
+    layout, 
+    pan, 
+    zoom, 
+    pixelSize, 
+    pixelGap, 
+    glowTheme, 
+    bgTheme, 
+    glowIntensity, 
+    highlightedIndices, 
+    animationMode, 
+    animationEnabled, 
+    hoveredWordIndex,
+    detailsMode
+  ]);
 
   // Handle Canvas Resize
   useEffect(() => {
@@ -332,7 +353,6 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    // Zoom centered around mouse pointer
     setPan(prev => ({
       x: mouseX - (mouseX - prev.x) * (newZoom / zoom),
       y: mouseY - (mouseY - prev.y) * (newZoom / zoom)
@@ -346,7 +366,7 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
     setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
   };
 
-  // Mouse Move: Pan or Hover Detection
+  // Mouse Move: Pan or Ultra-Fast O(1) Hover Detection (only when detailsMode is active)
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -364,7 +384,13 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
       return;
     }
 
-    // Hover search: map mouse canvas pos to world coordinate
+    // If detailsMode is off, do not perform hover lookups to keep page ultra-lightweight
+    if (!detailsMode) {
+      if (hoveredWordIndex !== null) setHoveredWordIndex(null);
+      return;
+    }
+
+    // Instant O(1) coordinate lookup
     const worldX = (mouseCanvasX - pan.x) / zoom;
     const worldY = (mouseCanvasY - pan.y) / zoom;
     const unitSize = pixelSize + pixelGap;
@@ -372,20 +398,17 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
     const gridX = Math.round(worldX / unitSize);
     const gridY = Math.round(worldY / unitSize);
 
-    // Find nearest point within proximity
     let closestIndex: number | null = null;
-    let minDist = 4 * 4;
 
-    for (let i = 0; i < layout.points.length; i++) {
-      const pt = layout.points[i];
-      if (!pt) continue;
-      const dx = pt.x - gridX;
-      const dy = pt.y - gridY;
-      const dist = dx * dx + dy * dy;
-      if (dist < minDist) {
-        minDist = dist;
-        closestIndex = i;
+    if (shape === 'square' || shape === 'rectangle') {
+      if (gridX >= 0 && gridX < columns && gridY >= 0) {
+        const idx = gridY * columns + gridX;
+        if (idx >= 0 && idx < TOTAL_QURAN_WORDS) {
+          closestIndex = idx;
+        }
       }
+    } else if (spatialMap) {
+      closestIndex = spatialMap.get(`${gridX},${gridY}`) ?? null;
     }
 
     setHoveredWordIndex(closestIndex);
@@ -396,15 +419,20 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
   };
 
   const handleClick = () => {
+    if (!detailsMode) {
+      // Suggest activating details mode
+      onToggleDetailsMode(true);
+      return;
+    }
     if (hoveredWordIndex !== null) {
       onSelectWord(hoveredWordIndex);
     }
   };
 
-  // Hovered Word Info
-  const words = getQuranWords();
-  const hoveredWordObj = hoveredWordIndex !== null ? words[hoveredWordIndex] : null;
-  const hoveredSurah = hoveredWordIndex !== null ? getSurahForWordIndex(hoveredWordIndex) : null;
+  // Lazy loaded words info only when detailsMode is on
+  const words = detailsMode ? getQuranWords() : null;
+  const hoveredWordObj = (detailsMode && words && hoveredWordIndex !== null) ? words[hoveredWordIndex] : null;
+  const hoveredSurah = (detailsMode && hoveredWordIndex !== null) ? getSurahForWordIndex(hoveredWordIndex) : null;
   const isHoveredLit = hoveredWordIndex !== null && highlightedIndices.has(hoveredWordIndex);
 
   return (
@@ -423,101 +451,136 @@ export const PixelCanvas: React.FC<PixelCanvasProps> = ({
           setHoveredWordIndex(null);
         }}
         onClick={handleClick}
-        className={`w-full h-full block ${isDragging ? 'cursor-grabbing' : hoveredWordIndex !== null ? 'cursor-pointer' : 'cursor-grab'}`}
+        className={`w-full h-full block ${isDragging ? 'cursor-grabbing' : (detailsMode && hoveredWordIndex !== null) ? 'cursor-pointer' : 'cursor-grab'}`}
       />
 
-      {/* Floating Canvas View Controls */}
-      <div className="absolute top-4 left-4 flex flex-col gap-1.5 bg-slate-900/90 border border-slate-800 p-1.5 rounded-xl shadow-lg backdrop-blur-md">
-        <button
-          onClick={() => {
-            const newZoom = Math.min(8, zoom * 1.3);
-            setZoom(newZoom);
-          }}
-          className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-          title="تكبير"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => {
-            const newZoom = Math.max(0.15, zoom * 0.7);
-            setZoom(newZoom);
-          }}
-          className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-          title="تصغير"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => resetTransform()}
-          className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-          title="إعادة التمركز والتكبير الافتراضي"
-        >
-          <Maximize2 className="w-4 h-4" />
-        </button>
+      {/* Top Controls Overlay Bar */}
+      <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
+        {/* Left: Zoom & View Controls */}
+        <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 p-1.5 rounded-xl shadow-lg backdrop-blur-md pointer-events-auto">
+          <button
+            onClick={() => {
+              const newZoom = Math.min(8, zoom * 1.3);
+              setZoom(newZoom);
+            }}
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+            title="تكبير"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              const newZoom = Math.max(0.15, zoom * 0.7);
+              setZoom(newZoom);
+            }}
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+            title="تصغير"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => resetTransform()}
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+            title="ملاءمة الشاشة"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+
+          <div className="w-[1px] h-4 bg-slate-800 mx-1" />
+
+          {/* Quick Animation Toggle */}
+          <button
+            onClick={() => onToggleAnimation(!animationEnabled)}
+            className={`px-2 py-1 rounded-lg text-xs font-arabic font-semibold flex items-center gap-1 transition-all ${
+              animationEnabled
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'bg-slate-800 text-slate-400 hover:text-white'
+            }`}
+            title="تشغيل / إيقاف حركة الإنارة"
+          >
+            {animationEnabled ? (
+              <>
+                <Pause className="w-3 h-3 text-emerald-400" />
+                <span className="hidden sm:inline">حركة مفعّلة</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3 h-3 text-amber-400" />
+                <span className="hidden sm:inline">حركة متوقفة</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Right: Details Mode Switcher */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          <button
+            onClick={() => onToggleDetailsMode(!detailsMode)}
+            className={`px-3 py-1.5 rounded-xl font-arabic text-xs font-bold transition-all shadow-lg flex items-center gap-2 border ${
+              detailsMode
+                ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-amber-500/20'
+                : 'bg-slate-900/90 text-slate-300 hover:text-white border-slate-700/80 hover:border-slate-600 backdrop-blur-md'
+            }`}
+            title="تفعيل أو إيقاف وضع إظهار التفاصيل لتسريع الصفحة"
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            <span>
+              {detailsMode ? 'وضع إظهار التفاصيل (مفعّل)' : 'وضع الأداء السريع (اضغط لإظهار التفاصيل)'}
+            </span>
+          </button>
+        </div>
       </div>
 
-      {/* Shape Indicator Tag */}
-      <div className="absolute top-4 right-4 bg-slate-900/80 border border-slate-800/80 px-3 py-1.5 rounded-xl backdrop-blur-md text-xs text-slate-300 flex items-center gap-2 font-medium">
-        <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-        <span>
-          {shape === 'square' ? 'لوحة مربعة' :
-           shape === 'rectangle' ? 'لوحة مستطيلة' :
-           shape === 'circle' ? 'قرص دائري ذهبي' :
-           shape === 'mushaf' ? 'مصحف ٦٠٤ صفحات' :
-           shape === 'spiral' ? 'مسار حلزوني' :
-           shape === 'crescent' ? 'هلال إسلامي' : 'محراب معماري'}
-        </span>
-        <span className="text-slate-600">|</span>
-        <span className="font-mono text-amber-300">{Math.round(zoom * 100)}%</span>
-      </div>
+      {/* Floating Status Notification if Details Mode is OFF */}
+      {!detailsMode && (
+        <div className="absolute bottom-4 left-4 bg-slate-900/85 border border-slate-800 rounded-xl px-3 py-2 text-[11px] font-arabic text-slate-400 backdrop-blur-md flex items-center gap-2 shadow-lg">
+          <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span>اللوحة تعمل بأقصى سرعة وخفة. انقر زر «إظهار التفاصيل» بالأعلى لتفحص الكلمات والآيات.</span>
+        </div>
+      )}
 
-      {/* Interactive Tooltip when hovering over any pixel */}
-      {hoveredWordObj && hoveredSurah && (
+      {/* Hover Word Tooltip Card (Only when detailsMode is active) */}
+      {detailsMode && hoveredWordObj && hoveredSurah && (
         <div
-          className="fixed pointer-events-none z-50 transform -translate-x-1/2 -translate-y-full mb-3 bg-slate-950/95 border border-amber-500/40 text-white px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md text-right min-w-[220px] max-w-[320px] transition-all"
+          className="fixed pointer-events-none z-50 bg-slate-900/95 border border-amber-500/40 rounded-xl p-3 shadow-2xl backdrop-blur-md text-right font-arabic max-w-xs transition-opacity duration-150"
           style={{
-            left: `${mousePos.x}px`,
-            top: `${mousePos.y - 12}px`
+            left: `${Math.min(window.innerWidth - 260, mousePos.x + 16)}px`,
+            top: `${Math.min(window.innerHeight - 140, mousePos.y + 16)}px`
           }}
           dir="rtl"
         >
-          <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 mb-2">
-            <span className="text-xs font-bold text-amber-400 flex items-center gap-1">
-              <BookOpen className="w-3.5 h-3.5" />
-              سورة {hoveredSurah.nameArabic}
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5 mb-2">
+            <span className="text-amber-400 font-bold text-xs flex items-center gap-1">
+              <Sparkles className="w-3 h-3" />
+              <span>سورة {hoveredSurah.nameArabic}</span>
             </span>
-            <span className="text-[11px] font-mono text-slate-400">
-              الآية {hoveredWordObj.ayah}
+            <span className="text-[11px] text-slate-400 font-mono">
+              آية {hoveredWordObj.ayah}
             </span>
           </div>
 
           <div className="space-y-1">
-            <div className="text-sm font-serif text-slate-100 font-bold">
-              الكلمة: <span className={isHoveredLit ? 'text-amber-300 underline font-extrabold' : 'text-slate-200'}>«{hoveredWordObj.text}»</span>
+            <div className="text-lg font-serif text-white font-bold">
+              {hoveredWordObj.text}
             </div>
+
             <div className="text-[11px] text-slate-400 flex items-center justify-between">
-              <span>ترتيب الكلمة: #{hoveredWordObj.id.toLocaleString('ar-EG')}</span>
-              <span className="text-amber-400/90 text-[10px]">اضغط لعرض تفاصيل الآية</span>
+              <span>الكلمة رقم {hoveredWordObj.id.toLocaleString('ar-EG')}</span>
+              {isHoveredLit && (
+                <span className="text-emerald-400 font-bold flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span>مطابقة للبحث</span>
+                </span>
+              )}
+            </div>
+
+            <div className="text-[10px] text-amber-300/80 pt-1 flex items-center gap-1">
+              <MousePointerClick className="w-3 h-3" />
+              <span>انقر لعرض الآية الكاملة والاستماع للتلاوة</span>
             </div>
           </div>
         </div>
       )}
-
-      {/* Bottom status bar in Canvas */}
-      <div className="absolute bottom-3 right-3 left-3 flex items-center justify-between pointer-events-none text-xs text-slate-400">
-        <div className="bg-slate-900/80 backdrop-blur-md border border-slate-800 px-3 py-1 rounded-lg pointer-events-auto flex items-center gap-2">
-          <span>اسحب للتحريك</span>
-          <span className="text-slate-600">·</span>
-          <span>عجلة الفأرة للتكبير</span>
-          <span className="text-slate-600">·</span>
-          <span>اضغط على أي بكسل للاستكشاف</span>
-        </div>
-        
-        <div className="bg-slate-900/80 backdrop-blur-md border border-slate-800 px-3 py-1 rounded-lg pointer-events-auto font-mono text-amber-400">
-          ٧٧,٨٢٥ بكسل قرآنية
-        </div>
-      </div>
     </div>
   );
 };
