@@ -1,0 +1,6 @@
+{
+  "name": "لوحة بكسل كلمات القرآن الكريم",
+  "description": "لوحة بكسل تفاعلية متطورة تمثل كل كلمة في القرآن الكريم، مع إمكانية إنارة البكسلات حسب الكلمات وتغيير شكل اللوحة (دائرة، مستطيل، مربع، حلزوني).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
